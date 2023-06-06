@@ -1,8 +1,9 @@
 import * as coda from "@codahq/packs-sdk";
+import { off } from "process";
 
 export const pack = coda.newPack();
 
-pack.addNetworkDomain('cobudget.com/api');
+pack.addNetworkDomain('cobudget.com');
 
 const bucketQuery = `
     query Buckets($groupSlug: String, $roundSlug: String!, $offset: Int, $limit: Int, $status: [StatusType!]) {
@@ -23,9 +24,21 @@ const bucketQuery = `
             maxGoal
             flags {
             type
-            __typename
             }
             noOfFunders
+            funders {
+                id
+                amount
+                createdAt
+                roundMember {
+                  id
+                  user {
+                    id
+                    name
+                    username
+                  }
+                }
+              }
             income
             totalContributions
             totalContributionsFromCurrentMember
@@ -37,7 +50,6 @@ const bucketQuery = `
             percentageFunded
             round {
             canCocreatorStartFunding
-            __typename
             }
             customFields {
             value
@@ -50,22 +62,39 @@ const bucketQuery = `
                 isRequired
                 position
                 createdAt
-                __typename
             }
-            __typename
             }
-            images {
-            id
-            small
-            large
-            __typename
-            }
-            __typename
         }
-        __typename
         }
     }
 `;
+
+const FunderSchema = coda.makeObjectSchema({
+    properties: {
+        id: {
+            type: coda.ValueType.String,
+            description: 'The id of the funder.',
+        },
+        amount: {
+            type: coda.ValueType.Number,
+            description: 'The amount given by the funder.',
+        },
+        createdAt: {
+            type: coda.ValueType.String,
+            description: 'The date the funding was given.',
+        },
+        username: {
+            type: coda.ValueType.String,
+            description: 'The username of the funder.',
+        },
+        name: {
+            type: coda.ValueType.String,
+            description: 'The name of the funder.',
+        },
+    },
+    displayProperty: 'id',
+    idProperty: 'id',
+});
 
 const BucketSchema = coda.makeObjectSchema({
     properties: {
@@ -133,6 +162,11 @@ const BucketSchema = coda.makeObjectSchema({
             type: coda.ValueType.Number,
             description: 'The percentage funded of the bucket.',
         },
+        funders: {
+            type: coda.ValueType.Array,
+            description: 'The funders of the bucket.',
+            items: FunderSchema
+        },
     },
     displayProperty: 'title',
     idProperty: 'id',
@@ -157,14 +191,23 @@ pack.addSyncTable({
                 name: 'roundSlug',
                 description: 'The slug of the round.',
             }),
+            coda.makeParameter({
+                type: coda.ParameterType.Number,
+                name: 'limit',
+                description: 'The limit of the buckets.',
+                optional: true,
+            }),
         ],
         execute: async function (args, context) {
-            const [groupSlug, roundSlug] = args;
+            const [groupSlug, roundSlug, limit] = args;
+
+            let offset: number = (context.sync.continuation?.offset as number) || 0;
+
             const variables = {
                 "groupSlug": groupSlug,
                 "roundSlug": roundSlug,
-                "offset": 0,
-                "limit": 1000,
+                "offset": offset,
+                "limit": limit || 50,
                 "status": ["PENDING_APPROVAL", "OPEN_FOR_FUNDING", "FUNDED", "COMPLETED", "CANCELED"]
               };
             const response = await context.fetcher.fetch({
@@ -173,10 +216,50 @@ pack.addSyncTable({
                 body: JSON.stringify({ query: bucketQuery, variables }),
             });
 
-            const buckets = response.body.data.bucketsPage.buckets;
+            const rows = response.body.data.bucketsPage.buckets;
+            const buckets = [];
 
+            let continuation;
+            if (response.body.data.bucketsPage.moreExist) {
+              continuation = {
+                offset: offset + limit,
+              };
+            }
+
+            for (const b of rows) {
+                const bucket = {
+                    id: b.id,
+                    description: b.description,
+                    summary: b.summary,
+                    title: b.title,
+                    minGoal: b.minGoal,
+                    maxGoal: b.maxGoal,
+                    noOfFunders: b.noOfFunders,
+                    income: b.income,
+                    totalContributions: b.totalContributions,
+                    totalContributionsFromCurrentMember: b.totalContributionsFromCurrentMember,
+                    noOfComments: b.noOfComments,
+                    published: b.published,
+                    approved: b.approved,
+                    canceled: b.canceled,
+                    status: b.status,
+                    percentageFunded: b.percentageFunded,
+                    funders: b.funders.map(f => {
+                        return {
+                            id: f.id,
+                            amount: f.amount,
+                            createdAt: f.createdAt,
+                            username: f.roundMember.user.username,
+                            name: f.roundMember.user.name,
+                        };
+                    })
+                };
+                buckets.push(bucket);
+            }
+            
             return {
-                result: buckets
+                result: buckets,
+                continuation: continuation,
               };
         },
     },
