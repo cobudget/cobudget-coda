@@ -20,6 +20,17 @@ const bucketQuery = `
             description
             summary
             title
+            cocreators {
+                user {
+                    username
+                    roundMemberships {
+                        email
+                        round {
+                            slug
+                        }
+                    }
+                }
+              }
             minGoal
             maxGoal
             flags {
@@ -96,6 +107,21 @@ const FunderSchema = coda.makeObjectSchema({
     idProperty: 'id',
 });
 
+const CocreatorSchema = coda.makeObjectSchema({
+    properties: {
+        email: {
+            type: coda.ValueType.String,
+            description: 'The email of the cocreator.',
+        },
+        username: {
+            type: coda.ValueType.String,
+            description: 'The username of the cocreator.',
+        }
+    },
+    displayProperty: 'username',
+    idProperty: 'username',
+});
+
 const BucketSchema = coda.makeObjectSchema({
     properties: {
         id: {
@@ -113,6 +139,11 @@ const BucketSchema = coda.makeObjectSchema({
         title: {
             type: coda.ValueType.String,
             description: 'The title of the bucket.',
+        },
+        cocreators : {
+            type: coda.ValueType.Array,
+            description: 'The cocreators of the bucket.',
+            items: CocreatorSchema
         },
         minGoal: {
             type: coda.ValueType.Number,
@@ -197,9 +228,21 @@ pack.addSyncTable({
                 description: 'The limit of the buckets.',
                 optional: true,
             }),
+            coda.makeParameter({
+                type: coda.ParameterType.String,
+                name: "session",
+                description: "The session parameter.",
+                optional: true,
+            }),
+            coda.makeParameter({
+                type: coda.ParameterType.String,
+                name: "session_sig",
+                description: "The session signature parameter.",
+                optional: true,
+            }),
         ],
         execute: async function (args, context) {
-            const [groupSlug, roundSlug, limit] = args;
+            const [groupSlug, roundSlug, limit, session, session_sig] = args;
 
             let offset: number = (context.sync.continuation?.offset as number) || 0;
 
@@ -211,8 +254,11 @@ pack.addSyncTable({
                 "status": ["PENDING_APPROVAL", "OPEN_FOR_FUNDING", "FUNDED", "COMPLETED", "CANCELED"]
               };
             const response = await context.fetcher.fetch({
-                method: 'POST',
-                url: 'https://cobudget.com/api',
+                method: "POST",
+                url: "https://cobudget.com/api",
+                headers: {
+                    Cookie: `session=${session}; session.sig=${session_sig}`,
+                },
                 body: JSON.stringify({ query: bucketQuery, variables }),
             });
 
@@ -244,15 +290,23 @@ pack.addSyncTable({
                     canceled: b.canceled,
                     status: b.status,
                     percentageFunded: b.percentageFunded,
-                    funders: b.funders.map(f => {
+                    // including all funders is too much data
+                    // funders: b.funders.map(f => {
+                    //     return {
+                    //         id: f.id,
+                    //         amount: f.amount,
+                    //         createdAt: f.createdAt,
+                    //         username: f.roundMember.user.username,
+                    //         name: f.roundMember.user.name,
+                    //     };
+                    // }),
+                    cocreators: b.cocreators.map(c => {
+                        const email = c.user.roundMemberships.find(r => r.round.slug === roundSlug).email;
                         return {
-                            id: f.id,
-                            amount: f.amount,
-                            createdAt: f.createdAt,
-                            username: f.roundMember.user.username,
-                            name: f.roundMember.user.name,
+                            email: email,
+                            username: c.user.username,
                         };
-                    })
+                    }),
                 };
                 buckets.push(bucket);
             }
